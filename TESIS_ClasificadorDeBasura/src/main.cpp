@@ -1,7 +1,8 @@
 #include <Arduino.h>
 
 
-struct Button {
+struct Button 
+{
 	const uint8_t PIN;
 	uint32_t numberKeyPresses;
 	bool pressed;
@@ -11,6 +12,8 @@ Button button1 = {12, 0, false};  //Metal
 Button button2 = {13, 0, false};  //Vidrio
 Button button3 = {14, 0, false};  //Carton
 Button button4 = {4, 0, false};   //Plastico
+
+Button button5 = {5, 0, false};   //Inicio del motor
 
 volatile int metal = 0;
 volatile int vidrio = 0;
@@ -36,46 +39,67 @@ volatile int dutyCycle2 = 0;
 
 
 //Variables PWM Motor
+const int freqMotor = 2000;
+const int ledChannelMotor = 2;
+const int resolutionMotor = 13;
+const int ledPinMotor = 18;
+volatile int dutyCycleMotor = 0; // (20%=1024  ;  17,5% = 819  ; 15% = 614 ; 12,5% = 410; 10% = 205)
 
+void inicio()
+{
+  for(int dutyMotor = 4095; dutyMotor <= 8191; dutyMotor+2)
+  {   
+    ledcWrite(ledChannelMotor, dutyMotor);
+    delay(1);
+  }
+}
+
+void detencion()
+{
+  for(int dutyMotor = 8191; dutyMotor >= 0; dutyMotor-2)
+  {
+    ledcWrite(ledChannelMotor, dutyMotor);
+    delay(1);  
+  }
+}
 
 //Interrupciones de los sensores
-void isrSensor1() 
+void ARDUINO_ISR_ATTR isrSensor1() 
 {
-  if (millis() - startTime > timeThreshold1)
-  {
-    button1.numberKeyPresses++;
-	  button1.pressed = true;
-    metal = 1;
-    startTime = millis();
-  }
+  button1.numberKeyPresses++;
+  button1.pressed = true;
+  metal = 1;
 }
-void isrSensor2()
+void ARDUINO_ISR_ATTR isrSensor2()
 {
-  if (millis() - startTime > timeThreshold2)
-  {
-    button2.numberKeyPresses++;
-	  button2.pressed = true;
-    vidrio = 1;
-    startTime = millis();
-  }
+  button2.numberKeyPresses++;
+	button2.pressed = true;
+  vidrio = 1;
 }
-void isrSensor3()
+void ARDUINO_ISR_ATTR isrSensor3()
 {
-  if (millis() - startTime > timeThreshold3)
-  {
-    button3.numberKeyPresses++;
-	  button3.pressed = true;
-    carton = 1;
-    startTime = millis();
-  }
+  button3.numberKeyPresses++;
+	button3.pressed = true;
+  carton = 1;
 }
-void isrSensor4()
+void ARDUINO_ISR_ATTR isrSensor4()
 {
   if (millis() - startTime > timeThreshold4)
   {
     button4.numberKeyPresses++;
     button4.pressed = true;
-    plastico = 1;
+    plastico = 1; 
+    startTime = millis();
+  }
+}
+
+//Interrupcion para arranque de la cinta
+void ARDUINO_ISR_ATTR isrSensor5()
+{
+  if (millis() - startTime > timeThreshold4)
+  {
+    button5.pressed = true;
+    inicio();
     startTime = millis();
   }
 }
@@ -83,18 +107,19 @@ void isrSensor4()
 void setup() {
   //Serial
 	Serial.begin(115200);
+  Serial.println("Inicializando...");
 
-  //Interrupciones gpio
-	pinMode(button1.PIN, INPUT);
+  //Interrupciones gpio de los sensores
+	pinMode(button1.PIN, INPUT_PULLDOWN);
 	attachInterrupt(button1.PIN, isrSensor1, RISING);
-  pinMode(button2.PIN, INPUT);
+  pinMode(button2.PIN, INPUT_PULLDOWN);
 	attachInterrupt(button2.PIN, isrSensor2, RISING);
-  pinMode(button3.PIN, INPUT);
+  pinMode(button3.PIN, INPUT_PULLDOWN);
 	attachInterrupt(button3.PIN, isrSensor3, RISING);
-  pinMode(button4.PIN, INPUT);
+  pinMode(button4.PIN, INPUT_PULLDOWN);
 	attachInterrupt(button4.PIN, isrSensor4, RISING);
 
-  // configure LED PWM functionalitites
+  // configure LED PWM para servos
   ledcSetup(ledChannel1, freq, resolution);
   ledcAttachPin(ledPin1, ledChannel1);
   ledcWrite(ledChannel1, dutyCycle1);
@@ -102,6 +127,10 @@ void setup() {
   ledcAttachPin(ledPin2, ledChannel2);
   ledcWrite(ledChannel2, dutyCycle2);
 
+  // configure LED PWM para motor
+  ledcSetup(ledChannelMotor, freqMotor, resolutionMotor);
+  ledcAttachPin(ledPinMotor, ledChannelMotor);
+  ledcWrite(ledChannelMotor, dutyCycleMotor);
 }
 
 void loop() {
