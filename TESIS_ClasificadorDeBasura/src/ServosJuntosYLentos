@@ -1,0 +1,215 @@
+/*********
+  Rui Santos
+  Complete project details at https://RandomNerdTutorials.com/esp32-hc-sr04-ultrasonic-arduino/
+  
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files.
+  
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+*********/
+
+#include <Arduino.h>
+
+const int freq = 50;            //Frecuencia del PWM
+const int ledChannel1 = 0;      //Canal del servo 1 = 0 = timer0
+const int ledChannel2 = 1;      //Canal del servo 2 = 1 = timer0
+const int resolution = 13;      //13 bits de resolucion = 8191
+const int ledPin1 = 26;         //Pin del servo 1
+const int ledPin2 = 25;         //Pin del servo 2
+volatile int dutyCycle1 = 650;    //Duty del servo 1 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+volatile int dutyCycle2 = 470;    //Duty del servo 2 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+
+#define duty1metal 775 // (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+#define duty2metal 560
+
+#define duty1vidrio 650
+#define duty2vidrio 470
+
+#define duty1carton 880
+#define duty2carton 740
+
+#define duty1plastico 500
+#define duty2plastico 350
+
+int dutyActual1 = 650;
+int dutyActual2 = 470;
+
+int contador = 0;
+
+//Creamos una estructura Button la cual vamos a usar para las entradas GPIO
+struct Button 
+{
+	const uint8_t PIN;            //Numero de Pin
+	uint32_t numberKeyPresses;    //Cantidad de veces que fue presionado
+	bool pressed;                 //Presionado (True or False)
+};
+
+Button button1 = {13, 0, false};  //Sensor del Metal
+Button button2 = {12, 0, false};  //Sensor del Vidrio
+Button button3 = {14, 0, false};  //Sensor del Carton/Madera
+Button button4 = {27, 0, false};   //Sensor del Plastico
+
+//Definimos las variables para realizar la clasificacion:
+volatile int metal = 0;
+volatile int vidrio = 0;
+volatile int carton = 0;
+volatile int plastico = 0;
+
+int material = 0;
+
+//Tiempo para antirrebote de las entradas GPIO
+const unsigned long timeThreshold1 = 150;
+const unsigned long timeThreshold2 = 150;
+const unsigned long timeThreshold3 = 150;
+const unsigned long timeThreshold4 = 150;
+
+unsigned long startTime1 = 0;         //GPIO plastico
+unsigned long startTime2 = 0;         //GPIO plastico
+unsigned long startTime3 = 0;         //GPIO plastico
+unsigned long startTime4 = 0;         //GPIO plastico
+
+
+
+/****************************************************************************************************************************************
+*****************************************************************************************************************************************
+******************************************************       FUNCIONES      *************************************************************
+*****************************************************************************************************************************************
+****************************************************************************************************************************************/
+
+void moverServos(int posFinal1, int postFinal2, int posActual1, int posActual2)
+{
+  if((posFinal1 - posActual1) > 0)
+    {
+      for(int i=0; i<=(posFinal1 - posActual1); i++)
+      {
+        ledcWrite(ledChannel1, posActual1 + i);
+        ledcWrite(ledChannel2, posActual2 + i);
+        delay(4);
+      }
+    }
+
+    else if ((posFinal1 - posActual1) < 0)
+    {
+      for(int i=0; i<=(posActual1 - posFinal1); i++)
+      {
+        ledcWrite(ledChannel1, posActual1 - i);
+        ledcWrite(ledChannel2, posActual2 - i);
+        delay(4);
+      }
+    }
+}
+
+
+/****************************************************************************************************************************************
+*****************************************************************************************************************************************
+**************************************************       INTERRUPCIONES     *************************************************************
+*****************************************************************************************************************************************
+****************************************************************************************************************************************/
+
+//Interrupciones del sensor del metal
+void ARDUINO_ISR_ATTR isrSensor1() 
+{
+  if (millis() - startTime1 > timeThreshold1)
+  { 
+    material = 1;
+    startTime1 = millis();             //Define en startTime el tiempo al cual se ejecuto la interrupcion
+  }
+}
+
+//Interrupciones del sensor del vidrio
+void ARDUINO_ISR_ATTR isrSensor2()
+{
+  if (millis() - startTime2 > timeThreshold2)
+  {
+    material = 2;
+    startTime2 = millis();             //Define en startTime el tiempo al cual se ejecuto la interrupcion
+  }
+}
+
+//Interrupciones del sensor de madera/carton
+void ARDUINO_ISR_ATTR isrSensor3()
+{
+  if (millis() - startTime3 > timeThreshold3)
+  {    
+    material = 3;
+    startTime3 = millis();             //Define en startTime el tiempo al cual se ejecuto la interrupcion
+  }
+}
+
+//Interrupciones del sensor del plastico
+void ARDUINO_ISR_ATTR isrSensor4()
+{
+  if (millis() - startTime4 > timeThreshold4)
+  {
+    material = 4;
+    startTime4 = millis();             //Define en startTime el tiempo al cual se ejecuto la interrupcion
+  }
+}
+
+void setup() {
+
+	Serial.begin(115200);
+  Serial.println("Inicializando...");
+
+  //Interrupciones gpio de los sensores
+  //Sensor 1
+	pinMode(button1.PIN, INPUT_PULLDOWN);                   //Establece el sensor1 como entrada con resistencia de Pulldown incluida
+	attachInterrupt(button1.PIN, isrSensor1, RISING);       //Activa la interrupion del sensor 1 y la llama isrSensor1. La misma se genera con un flanco ascendente
+  //Sensor 2
+  pinMode(button2.PIN, INPUT_PULLDOWN);
+	attachInterrupt(button2.PIN, isrSensor2, RISING);
+  //Sensor 3
+  pinMode(button3.PIN, INPUT_PULLDOWN);
+	attachInterrupt(button3.PIN, isrSensor3, RISING);
+  //Sensor 4
+  pinMode(button4.PIN, INPUT_PULLDOWN);
+	attachInterrupt(button4.PIN, isrSensor4, RISING);
+
+//Configura LED PWM para servos
+  //Servo 1
+  ledcSetup(ledChannel1, freq, resolution);               //Configura el PWM en el canal 0, con una frecuencia de 50 Hz y una resolucion de 13 bits 
+  ledcAttachPin(ledPin1, ledChannel1);                    //Se activa la interrupcion
+  ledcWrite(ledChannel1, dutyCycle1);                     //Se configura un Duty Cycle inicial
+
+  //Servo 2
+  ledcSetup(ledChannel2, freq, resolution);               //Lo mismo para el servo 2
+  ledcAttachPin(ledPin2, ledChannel2);
+  ledcWrite(ledChannel2, dutyCycle2);
+
+}
+
+void loop() 
+{
+  switch (material)
+  {
+  case 1:
+    moverServos(duty1metal, duty2metal, dutyCycle1, dutyCycle2);
+    dutyCycle1 = duty1metal;
+    dutyCycle2 = duty2metal;
+    break;
+  
+  case 2:
+    moverServos(duty1vidrio, duty2vidrio, dutyCycle1, dutyCycle2);
+    dutyCycle1 = duty1vidrio;
+    dutyCycle2 = duty2vidrio;
+    break;
+
+
+  case 3:
+    moverServos(duty1carton, duty2carton, dutyCycle1, dutyCycle2);
+    dutyCycle1 = duty1carton;
+    dutyCycle2 = duty2carton;
+    break;
+
+
+  case 4:
+    moverServos(duty1plastico, duty2plastico, dutyCycle1, dutyCycle2);
+    dutyCycle1 = duty1plastico;
+    dutyCycle2 = duty2plastico;
+    break;
+
+  default:
+    break;
+  }
+}
