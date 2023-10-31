@@ -1,12 +1,15 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include <LiquidCrystal_I2C.h>
+
 
 /****************************************************************************************************************************************
 *****************************************************************************************************************************************
 *******************************************       VARIABLES A UTILIZAR      *************************************************************
 *****************************************************************************************************************************************
 ****************************************************************************************************************************************/
+
 
 //Creamos una estructura Button la cual vamos a usar para las entradas GPIO
 struct Button 
@@ -15,6 +18,7 @@ struct Button
 	uint32_t numberKeyPresses;    //Cantidad de veces que fue presionado
 	bool pressed;                 //Presionado (True or False)
 };
+
 
 Button button1 = {13, 0, false};  //Sensor del Metal
 Button button2 = {12, 0, false};  //Sensor del Vidrio
@@ -43,6 +47,8 @@ int contadorBufferClasificacion = 0;
 bool bufferActive1 = false;
 bool bufferActive2 = false;
 
+u64_t materialEnCinta = 0;
+
 int contGeneral = 0;
 
 int contMetal = 0;
@@ -66,27 +72,34 @@ unsigned long startTime = 0;         //GPIO plastico
 unsigned long startTimeMotor = 0;     //GPIO arranque
 unsigned long startTimeCaida = 0;    //GPIO caida
 
+//Pruebas de variables de servos
+unsigned long MOVING_TIME = 3000; // moving time is 3 seconds
+unsigned long moveStartTime;
+unsigned int startDuty1 = 0;
+unsigned int startDuty2 = 0;
+
+
 //Variables PWM ServoMotores
 const int freq = 50;            //Frecuencia del PWM
 const int ledChannel1 = 0;      //Canal del servo 1 = 0 = timer0
 const int ledChannel2 = 1;      //Canal del servo 2 = 1 = timer0
 const int resolution = 13;      //13 bits de resolucion = 8191
 const int ledPin1 = 16;         //Pin del servo 1
-const int ledPin2 = 17;         //Pin del servo 2
-volatile int dutyCycle1 = 0;    //Duty del servo 1 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
-volatile int dutyCycle2 = 0;    //Duty del servo 2 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+const int ledPin2 = 4;         //Pin del servo 2
+volatile int dutyCycle1 = 775;    //Duty del servo 1 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+volatile int dutyCycle2 = 675;    //Duty del servo 2 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
 
-#define duty1metal 775 // (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
-#define duty2metal 560
+#define duty1metal 775 // (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812) DERECHO
+#define duty2metal 675 //IZQUIERDO
 
 #define duty1vidrio 650
-#define duty2vidrio 470
+#define duty2vidrio 550
 
 #define duty1carton 880
-#define duty2carton 740
+#define duty2carton 790
 
 #define duty1plastico 500
-#define duty2plastico 350
+#define duty2plastico 410
 
 
 //Variables PWM Motor
@@ -122,6 +135,11 @@ bool ledState = LOW;                //Estado actual del LED, estado inicial apag
 
 AsyncWebServer server(80);          //Crea una instancia del servidor web en el puerto 80.
 
+//Creacion del objeto LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2);//crear un objeto lcd (DIRECCIÓN pantalla, Tamaño x, Tamño y)
+
+int tiempoLCD = 0;
+int pantallaLCD = 0;
 
 /****************************************************************************************************************************************
 *****************************************************************************************************************************************
@@ -279,6 +297,29 @@ void inicio()
 
 }
 
+void moverServos(int posFinal1, int postFinal2, int posActual1, int posActual2)
+{
+  if((posFinal1 - posActual1) > 0)
+    {
+      for(int i=0; i<=(posFinal1 - posActual1); i++)
+      {
+        ledcWrite(ledChannel1, posActual1 + i);
+        ledcWrite(ledChannel2, posActual2 + i);
+        delay(8);
+      }
+    }
+
+    else if ((posFinal1 - posActual1) < 0)
+    {
+      for(int i=0; i<=(posActual1 - posFinal1); i++)
+      {
+        ledcWrite(ledChannel1, posActual1 - i);
+        ledcWrite(ledChannel2, posActual2 - i);
+        delay(8);
+      }
+    }
+}
+
 //Funcion que genera un detencion suave del Motor
 void detencion()
 {
@@ -302,6 +343,7 @@ void clasificacion(int material)
   {
     Serial.printf("Paso un metal\n");
     //Cambia la variable dutyCycle 1 y 2 para luego actualizar el duty de los servos (VA DE 163 a 983)
+    moverServos(duty1metal, duty2metal, dutyCycle1, dutyCycle2);
     dutyCycle1 = duty1metal; // (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
     dutyCycle2 = duty2metal;
     contMetal++;
@@ -309,6 +351,7 @@ void clasificacion(int material)
   else if (material == 3)
   {
     Serial.printf("Paso un vidrio\n");
+    moverServos(duty1vidrio, duty2vidrio, dutyCycle1, dutyCycle2);
     dutyCycle1 = duty1vidrio;
     dutyCycle2 = duty2vidrio;
     contVidrio++;
@@ -316,6 +359,7 @@ void clasificacion(int material)
   else if (material == 2)
   {
     Serial.printf("Paso un carton\n");
+    moverServos(duty1carton, duty2carton, dutyCycle1, dutyCycle2);
     dutyCycle1 = duty1carton;
     dutyCycle2 = duty2carton;
     contCarton++;
@@ -323,20 +367,19 @@ void clasificacion(int material)
   else if (material == 1)
   {
     Serial.printf("Paso un plastico\n");
+    moverServos(duty1plastico, duty2plastico, dutyCycle1, dutyCycle2);
     dutyCycle1 = duty1plastico;
     dutyCycle2 = duty2plastico;
     contPlastico++;
   }
-
-  //Actualiza la posicion de los servos
-  ledcWrite(ledChannel1, dutyCycle1);
-  ledcWrite(ledChannel2, dutyCycle2);
 
   // Obtén el porcentaje de cada material
   porcentajeMetal = (contMetal * 100.0) / contGeneral;
   porcentajeVidrio = (contVidrio * 100.0) / contGeneral;
   porcentajeCarton = (contCarton * 100.0) / contGeneral;
   porcentajePlastico = (contPlastico * 100.0) / contGeneral;
+
+  Serial.printf("Quedan %d \n", materialEnCinta);
 }
 
 /*processor es una función que se utiliza para reemplazar marcadores de posición en el código HTML con los valores de las variables. 
@@ -356,6 +399,15 @@ String processor(const String& var){
     return String(deviceCount);
   }
   return String();
+}
+
+void imprimirLCD(String A, String B)
+{
+    lcd.clear();
+    lcd.setCursor (0, 0);             //poner el cursor en las coordenadas (x,y)
+    lcd.print(A);      //muestra en la pantalla max 20 caracteres
+    lcd.setCursor (0, 1);
+    lcd.print(B);
 }
 
 
@@ -422,7 +474,8 @@ void ARDUINO_ISR_ATTR isrSensor6()
   {
     cayo.numberKeyPresses++;       //Contador de activaciones
     cayo.pressed = true;           //Boton presionado = True
-    bufferActive1 = true;
+//    bufferActive1 = true;
+    materialEnCinta --;
     finDeClasificacion = true;
     startTimeCaida = millis();        //Define en startTime el tiempo al cual se ejecuto la interrupcion
   }  
@@ -579,8 +632,13 @@ Esto se utiliza para actualizar dinámicamente los valores en la página web.*/
   });
 
 
-//Finalmente, se inicia el servidor web.
+  //Finalmente, se inicia el servidor web.
   server.begin();
+
+  //INICIALIZACION DE LA PANTALLA LCD
+  lcd.init();                  //inicializar la pantalla lcd
+  lcd.backlight();             //Encender la luz de fondo
+  imprimirLCD("Clasificador de", "Basura Autonomo");
 }
 
 /****************************************************************************************************************************************
@@ -598,7 +656,7 @@ void loop() {
   */
   if (button4.pressed)                       //Si el sensor 4 se activa, se disparan los dos timer, el de clasificacion y el de detencion de la cinta
   {
-    if (inicioDeClasificacion)
+    if (materialEnCinta>0)
     {    
       //Arranca timer 2
       timerAlarmEnable(timer);                 //Se activa la interrupcion del timer 2
@@ -616,6 +674,7 @@ void loop() {
   if (button5.pressed) 
     {
       inicio();
+      materialEnCinta++;
       button5.pressed = false;
     }
 
@@ -644,7 +703,7 @@ void loop() {
       timerAlarmDisable(timer);
       timerRestart(timer);
       timerStop(timer);
-
+      Serial.printf("Cayó el material\n");
       cayo.pressed = false;
     }
     else
@@ -666,22 +725,60 @@ void loop() {
     material = 0;
   }
 
-  if (bufferActive1 && (contadorBufferClasificacion!=contadorBufferLlenado))
+  if (finDeClasificacion && (contadorBufferClasificacion!=contadorBufferLlenado))
   {
     clasificacion(buffer[contadorBufferClasificacion]);
-    bufferActive1 = false;
+ //   bufferActive1 = false;
     contadorBufferClasificacion++;
+  //   finDeClasificacion=false;
     if(contadorBufferClasificacion >= 10)
     {
       contadorBufferClasificacion = 0;
     }
   }
 
-  if (finDeClasificacion && (contadorBufferClasificacion==contadorBufferLlenado))
+  if ((finDeClasificacion) && (contadorBufferClasificacion==contadorBufferLlenado))
   {
-    Serial.printf("Se detuvo la cinta \n");
-    detencion();                            //Se llama a la funcion detencion para que realice una detencion suave
-    finDeClasificacion = false;
+    if (materialEnCinta==0)
+    {
+      Serial.printf("Se detuvo la cinta \n");
+      detencion();                            //Se llama a la funcion detencion para que realice una detencion suave
+      finDeClasificacion = false;
+      Serial.printf("Quedan %d \n", materialEnCinta);
+    }
   }
+
+
+  //Muestro de diferentes datos en el LCD
+
+  if (millis() >= tiempoLCD + 5000)
+  {
+    tiempoLCD = millis();
+    pantallaLCD++;
+    if (pantallaLCD >= 5)
+    {
+      pantallaLCD = 0;
+    }
+    switch (pantallaLCD) 
+    {
+      case 0:
+        imprimirLCD("Clasificador de", "Basura Autonomo");
+        break;
+      case 1:
+        imprimirLCD("Pasaron " + String(contMetal) + " metales", "El porc: " + String(porcentajeMetal) + "%");
+        break;
+      case 2:
+        imprimirLCD("Pasaron " + String(contVidrio) + " vidrios", "El porc: " + String(porcentajeVidrio) + "%");
+        break;
+      case 3:
+        imprimirLCD("Pasaron " + String(contCarton) + " cartones", "El porc: " + String(porcentajeCarton) + "%");
+        break;
+      case 4:
+        imprimirLCD("Pasaron " + String(contPlastico) + " plasticos", "El porc: " + String(porcentajePlastico) + "%");
+        break;
+    }
+  }
+
+
 
 }
