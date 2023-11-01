@@ -1,12 +1,15 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include <LiquidCrystal_I2C.h>
+
 
 /****************************************************************************************************************************************
 *****************************************************************************************************************************************
 *******************************************       VARIABLES A UTILIZAR      *************************************************************
 *****************************************************************************************************************************************
 ****************************************************************************************************************************************/
+
 
 //Creamos una estructura Button la cual vamos a usar para las entradas GPIO
 struct Button 
@@ -16,20 +19,35 @@ struct Button
 	bool pressed;                 //Presionado (True or False)
 };
 
-Button button1 = {12, 0, false};  //Sensor del Metal
-Button button2 = {13, 0, false};  //Sensor del Vidrio
-Button button3 = {14, 0, false};  //Sensor del Carton/Madera
-Button button4 = {4, 0, false};   //Sensor del Plastico
 
-Button button5 = {27, 0, false};   //Sensor infrarrojo que da inicio al motor
+Button button1 = {13, 0, false};  //Sensor del Metal
+Button button2 = {12, 0, false};  //Sensor del Vidrio
+Button button3 = {14, 0, false};  //Sensor del Carton/Madera
+Button button4 = {27, 0, false};   //Sensor del Plastico
+
+Button button5 = {33, 0, false};   //Sensor infrarrojo que da inicio al motor
+
+Button cayo = {25, 0, true};   //Sensor infrarrojo que da indica que la basura cayo
 
 volatile bool inicioDeClasificacion = false;
+volatile bool finDeClasificacion = false;
 
 //Definimos las variables para realizar la clasificacion:
 volatile int metal = 0;
 volatile int vidrio = 0;
 volatile int carton = 0;
 volatile int plastico = 0;
+
+int material = 0;
+
+const int bufferSize = 10;  //Buffer para atender eventos
+int buffer[bufferSize];
+int contadorBufferLlenado = 0;
+int contadorBufferClasificacion = 0;
+bool bufferActive1 = false;
+bool bufferActive2 = false;
+
+unsigned int materialEnCinta = 0;
 
 int contGeneral = 0;
 
@@ -47,10 +65,19 @@ float porcentajePlastico = 0;
 const unsigned long timeThreshold1 = 150;
 const unsigned long timeThreshold2 = 150;
 const unsigned long timeThreshold3 = 150;
-const unsigned long timeThreshold4 = 150;
-const unsigned long timeThreshold5 = 150;
+const unsigned long timeThreshold4 = 250;
+const unsigned long timeThreshold5 = 250;
+const unsigned long timeThreshold6 = 250;
 unsigned long startTime = 0;         //GPIO plastico
 unsigned long startTimeMotor = 0;     //GPIO arranque
+unsigned long startTimeCaida = 0;    //GPIO caida
+
+//Pruebas de variables de servos
+unsigned long MOVING_TIME = 3000; // moving time is 3 seconds
+unsigned long moveStartTime;
+unsigned int startDuty1 = 0;
+unsigned int startDuty2 = 0;
+
 
 //Variables PWM ServoMotores
 const int freq = 50;            //Frecuencia del PWM
@@ -58,9 +85,21 @@ const int ledChannel1 = 0;      //Canal del servo 1 = 0 = timer0
 const int ledChannel2 = 1;      //Canal del servo 2 = 1 = timer0
 const int resolution = 13;      //13 bits de resolucion = 8191
 const int ledPin1 = 16;         //Pin del servo 1
-const int ledPin2 = 17;         //Pin del servo 2
-volatile int dutyCycle1 = 0;    //Duty del servo 1 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
-volatile int dutyCycle2 = 0;    //Duty del servo 2 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+const int ledPin2 = 4;         //Pin del servo 2
+volatile int dutyCycle1 = 775;    //Duty del servo 1 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+volatile int dutyCycle2 = 675;    //Duty del servo 2 (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+
+#define duty1metal 745 // (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812) DERECHO
+#define duty2metal 645 //IZQUIERDO
+
+#define duty1vidrio 630
+#define duty2vidrio 530
+
+#define duty1carton 850
+#define duty2carton 750
+
+#define duty1plastico 500
+#define duty2plastico 400
 
 
 //Variables PWM Motor
@@ -96,6 +135,11 @@ bool ledState = LOW;                //Estado actual del LED, estado inicial apag
 
 AsyncWebServer server(80);          //Crea una instancia del servidor web en el puerto 80.
 
+//Creacion del objeto LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2);//crear un objeto lcd (DIRECCIÓN pantalla, Tamaño x, Tamño y)
+
+int tiempoLCD = 0;
+int pantallaLCD = 0;
 
 /****************************************************************************************************************************************
 *****************************************************************************************************************************************
@@ -253,6 +297,29 @@ void inicio()
 
 }
 
+void moverServos(int posFinal1, int postFinal2, int posActual1, int posActual2)
+{
+  if((posFinal1 - posActual1) > 0)
+    {
+      for(int i=0; i<=(posFinal1 - posActual1); i++)
+      {
+        ledcWrite(ledChannel1, posActual1 + i);
+        ledcWrite(ledChannel2, posActual2 + i);
+        delay(8);
+      }
+    }
+
+    else if ((posFinal1 - posActual1) < 0)
+    {
+      for(int i=0; i<=(posActual1 - posFinal1); i++)
+      {
+        ledcWrite(ledChannel1, posActual1 - i);
+        ledcWrite(ledChannel2, posActual2 - i);
+        delay(8);
+      }
+    }
+}
+
 //Funcion que genera un detencion suave del Motor
 void detencion()
 {
@@ -267,6 +334,52 @@ void detencion()
   }
   dutyCycleMotor = 0;
   ledcWrite(ledChannelMotor, dutyCycleMotor);
+}
+
+void clasificacion(int material)
+{
+  Serial.printf("Calculando material:.........\n");
+  if (material == 4)
+  {
+    Serial.printf("Paso un metal\n");
+    //Cambia la variable dutyCycle 1 y 2 para luego actualizar el duty de los servos (VA DE 163 a 983)
+    moverServos(duty1metal, duty2metal, dutyCycle1, dutyCycle2);
+    dutyCycle1 = duty1metal; // (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
+    dutyCycle2 = duty2metal;
+    contMetal++;
+  }
+  else if (material == 3)
+  {
+    Serial.printf("Paso un vidrio\n");
+    moverServos(duty1vidrio, duty2vidrio, dutyCycle1, dutyCycle2);
+    dutyCycle1 = duty1vidrio;
+    dutyCycle2 = duty2vidrio;
+    contVidrio++;
+  }
+  else if (material == 2)
+  {
+    Serial.printf("Paso un carton\n");
+    moverServos(duty1carton, duty2carton, dutyCycle1, dutyCycle2);
+    dutyCycle1 = duty1carton;
+    dutyCycle2 = duty2carton;
+    contCarton++;
+  }
+  else if (material == 1)
+  {
+    Serial.printf("Paso un plastico\n");
+    moverServos(duty1plastico, duty2plastico, dutyCycle1, dutyCycle2);
+    dutyCycle1 = duty1plastico;
+    dutyCycle2 = duty2plastico;
+    contPlastico++;
+  }
+
+  // Obtén el porcentaje de cada material
+  porcentajeMetal = (contMetal * 100.0) / contGeneral;
+  porcentajeVidrio = (contVidrio * 100.0) / contGeneral;
+  porcentajeCarton = (contCarton * 100.0) / contGeneral;
+  porcentajePlastico = (contPlastico * 100.0) / contGeneral;
+
+  Serial.printf("Quedan %d \n", materialEnCinta);
 }
 
 /*processor es una función que se utiliza para reemplazar marcadores de posición en el código HTML con los valores de las variables. 
@@ -286,6 +399,15 @@ String processor(const String& var){
     return String(deviceCount);
   }
   return String();
+}
+
+void imprimirLCD(String A, String B)
+{
+    lcd.clear();
+    lcd.setCursor (0, 0);             //poner el cursor en las coordenadas (x,y)
+    lcd.print(A);      //muestra en la pantalla max 20 caracteres
+    lcd.setCursor (0, 1);
+    lcd.print(B);
 }
 
 
@@ -343,6 +465,21 @@ void ARDUINO_ISR_ATTR isrSensor5()
     button5.pressed = true;           //Boton presionado = True
     startTimeMotor = millis();        //Define en startTime el tiempo al cual se ejecuto la interrupcion
   }
+}
+
+//Interrupciones para sensar que la basura cayo
+void ARDUINO_ISR_ATTR isrSensor6()
+{
+  if (millis() - startTimeCaida > timeThreshold6) //Definimos un antirebote
+  {
+    cayo.numberKeyPresses++;       //Contador de activaciones
+    cayo.pressed = true;           //Boton presionado = True
+//    bufferActive1 = true;
+    materialEnCinta --;
+    finDeClasificacion = true;
+    startTimeCaida = millis();        //Define en startTime el tiempo al cual se ejecuto la interrupcion
+  }  
+
 }
 
 //Interrupcion del Timer 2 de clasificacion
@@ -405,28 +542,24 @@ void setup() {
 
   //Configura entrada que da inicio al motor
   pinMode(button5.PIN, INPUT_PULLDOWN);                   //Establece el sensor infrarrojo como entrada con resistencia de Pulldown incluida
-	attachInterrupt(button5.PIN, isrSensor5, RISING);       //Activa la interrupion del sensor y la llama isrSensor5. La misma se genera con un flanco ascendente       
+	attachInterrupt(button5.PIN, isrSensor5, RISING);       //Activa la interrupion del sensor y la llama isrSensor5. La misma se genera con un flanco ascendente
+
+  //Configura entrada que indica que cayo la basura
+  pinMode(cayo.PIN, INPUT_PULLDOWN);                   //Establece el sensor infrarrojo como entrada con resistencia de Pulldown incluida
+	attachInterrupt(cayo.PIN, isrSensor6, RISING);       //Activa la interrupion del sensor y la llama isrSensor5. La misma se genera con un flanco ascendente         
 
   //Configura LED PWM para motor
   ledcSetup(ledChannelMotor, freqMotor, resolutionMotor);
   ledcAttachPin(ledPinMotor, ledChannelMotor);
   ledcWrite(ledChannelMotor, dutyCycleMotor);
 
-  // Timer 2 configuracion
+  // Timer 2 configuracion para clasificar
   timer = timerBegin(2, 80, true);                        //Utilizamos el timer 2, con un prescaler de 80 y que cuente hacia arriba
   timerAttachInterrupt(timer, &onTimer, true);            //Se activa la interrupcion con nombre onTimer y que interrumpa en el borde
   timerAlarmWrite(timer, 1500000, false);                 //Se define que el contador sea 2.000.000 lo que es equivalente a 2 segundos
   timerAlarmDisable(timer);                               //Se desactiva la alarma
   timerRestart(timer);                                    //Se resetea el timer
   timerStop(timer);                                       //Se detiene para luego ser usado
-
-  // Timer 3 configuracion
-  timer3 = timerBegin(3, 80, true);                       //Utilizamos el timer 3, con un prescaler de 80 y que cuente hacia arriba
-  timerAttachInterrupt(timer3, &onTimer3, true);;         //Se activa la interrupcion con nombre onTimer3 y que interrumpa en el borde
-  timerAlarmWrite(timer3, 4000000, false);                //Se define que el contador sea 4.000.000 lo que es equivalente a 4 segundos
-  timerAlarmDisable(timer3);                              //Se desactiva la alarma
-  timerRestart(timer3);                                   //Se resetea el timer
-  timerStop(timer3);                                      //Se detiene para luego ser usado
 
 
   pinMode(pinWIfi, OUTPUT);
@@ -499,8 +632,13 @@ Esto se utiliza para actualizar dinámicamente los valores en la página web.*/
   });
 
 
-//Finalmente, se inicia el servidor web.
+  //Finalmente, se inicia el servidor web.
   server.begin();
+
+  //INICIALIZACION DE LA PANTALLA LCD
+  lcd.init();                  //inicializar la pantalla lcd
+  lcd.backlight();             //Encender la luz de fondo
+  imprimirLCD("Clasificador de", "Basura Autonomo");
 }
 
 /****************************************************************************************************************************************
@@ -518,15 +656,15 @@ void loop() {
   */
   if (button4.pressed)                       //Si el sensor 4 se activa, se disparan los dos timer, el de clasificacion y el de detencion de la cinta
   {
-    if (inicioDeClasificacion)
+    if (materialEnCinta>0)
     {    
       //Arranca timer 2
       timerAlarmEnable(timer);                 //Se activa la interrupcion del timer 2
       timerStart(timer);                       //Arranca el timer 2
       //Arranca timer 3
-      timerAlarmEnable(timer3);                //Se activa la interrupcion del timer 2
-      timerStart(timer3);                      //Arranca el timer 2
-      inicioDeClasificacion = false;
+//      timerAlarmEnable(timer3);                //Se activa la interrupcion del timer 2
+//     timerStart(timer3);                      //Arranca el timer 2
+//      inicioDeClasificacion = false;
     }
     button4.pressed = false;                 //Se pone en false la variable del boton presionado para un futuro
 	}
@@ -536,6 +674,7 @@ void loop() {
   if (button5.pressed) 
     {
       inicio();
+      materialEnCinta++;
       button5.pressed = false;
     }
 
@@ -548,43 +687,33 @@ void loop() {
   A su vez cuando detecta el tipo de material actualiza la posicion de los servos para su clasificacion y se incrementa el contador individual de cada material.
   Una vez realizada la clasificacion se restablecen las variables para realizar una nueva clasificacion en un futuro.
   Por ultimo apaga el timer.*/
-  if (interruptCounter > 0) 
+  if ((interruptCounter > 0) && (digitalRead(button4.PIN)==LOW))  
   {
     portENTER_CRITICAL(&timerMux);        //Se bloquea momentaneamente las interrupciones
     interruptCounter--;                   //Se resta 1 al interruptCounter para que en un futuro vuelva a interrumpir
     portEXIT_CRITICAL(&timerMux);         //Vuelven a la normalidad las interrupciones
-
-    Serial.printf("Calculando material:.........\n");
+    
     contGeneral++;
-
-    if (metal == 1)
+    material = metal + vidrio + carton + plastico;
+    
+    if (cayo.pressed)
     {
-      Serial.printf("Paso un metal\n");
-      //Cambia la variable dutyCycle 1 y 2 para luego actualizar el duty de los servos (VA DE 163 a 983)
-      dutyCycle1 = 775; // (20%=1623  ;  17,5% = 1420  ; 15% = 1218 ; 12,5% = 1015; 10% = 812)
-      dutyCycle2 = 560;
-      contMetal++;
+      clasificacion(material);
+      //Apaga el timer2 y su interrupcion
+      timerAlarmDisable(timer);
+      timerRestart(timer);
+      timerStop(timer);
+      cayo.pressed = false;
     }
-    else if (vidrio == 1)
-    {
-      Serial.printf("Paso un vidrio\n");
-      dutyCycle1 = 650;
-      dutyCycle2 = 470;
-      contVidrio++;
-    }
-    else if (carton == 1)
-    {
-      Serial.printf("Paso un carton\n");
-      dutyCycle1 = 880;
-      dutyCycle2 = 740;
-      contCarton++;
-    }
-    else if (plastico == 1)
-    {
-      Serial.printf("Paso un plastico\n");
-      dutyCycle1 = 500;
-      dutyCycle2 = 350;
-      contPlastico++;
+    else
+    { 
+      Serial.printf("Se guardo en el buffer...\n");
+      buffer[contadorBufferLlenado] = material;          
+      contadorBufferLlenado++;
+      if(contadorBufferLlenado >= 10)
+      {
+        contadorBufferLlenado = 0;
+      }
     }
 
     //Reestablece la variables
@@ -592,43 +721,62 @@ void loop() {
     vidrio = 0;
     carton = 0;
     plastico = 0;
-
-    //Actualiza la posicion de los servos
-    ledcWrite(ledChannel1, dutyCycle1);
-    ledcWrite(ledChannel2, dutyCycle2);
-
-    //Apaga el timer2 y su interrupcion
-    timerAlarmDisable(timer);
-    timerRestart(timer);
-    timerStop(timer);
-
-    // Obtén el porcentaje de cada material
-    porcentajeMetal = (contMetal * 100.0) / contGeneral;
-    porcentajeVidrio = (contVidrio * 100.0) / contGeneral;
-    porcentajeCarton = (contCarton * 100.0) / contGeneral;
-    porcentajePlastico = (contPlastico * 100.0) / contGeneral;
+    material = 0;
   }
 
-
-  /*DETENCION DE LA CINTA:
-  Cuando pasan 4 segundos luego de que se activo el ultimo sensor la cinta se detiene, esto se realiza para ahorrar energia y que no quede siempre en circulacion.
-  */
-  if (interruptCounter3 > 0) 
+  if (finDeClasificacion && (contadorBufferClasificacion!=contadorBufferLlenado))
   {
-    portENTER_CRITICAL(&timerMux3);         //Se bloquea momentaneamente las interrupciones
-    interruptCounter3--;                    //Se resta 1 al interruptCounter para que en un futuro vuelva a interrumpir
-    portEXIT_CRITICAL(&timerMux3);          //Vuelven a la normalidad las interrupciones
+    clasificacion(buffer[contadorBufferClasificacion]);
+    contadorBufferClasificacion++;
+    finDeClasificacion = false;
+    if(contadorBufferClasificacion >= 10)
+    {
+      contadorBufferClasificacion = 0;
+    }
+  }
 
-    if(inicioDeClasificacion == false)
+  if ((finDeClasificacion) && (contadorBufferClasificacion==contadorBufferLlenado))
+  {
+    if (materialEnCinta==0)
     {
       Serial.printf("Se detuvo la cinta \n");
       detencion();                            //Se llama a la funcion detencion para que realice una detencion suave
+      finDeClasificacion = false;
+      Serial.printf("Quedan %d \n", materialEnCinta);
     }
-
-
-    //Apaga el timer3 y su interrupcion    
-    timerAlarmDisable(timer3);
-    timerRestart(timer3);
-    timerStop(timer3);
   }
+
+
+  //Muestro de diferentes datos en el LCD
+
+  if (millis() >= tiempoLCD + 5000)
+  {
+    tiempoLCD = millis();
+    pantallaLCD++;
+    if (pantallaLCD >= 5)
+    {
+      pantallaLCD = 0;
+    }
+    switch (pantallaLCD) 
+    {
+      case 0:
+        imprimirLCD("Clasificador de", "Basura Autonomo");
+        break;
+      case 1:
+        imprimirLCD("Pasaron " + String(contMetal) + " metales", "El porc: " + String(porcentajeMetal) + "%");
+        break;
+      case 2:
+        imprimirLCD("Pasaron " + String(contVidrio) + " vidrios", "El porc: " + String(porcentajeVidrio) + "%");
+        break;
+      case 3:
+        imprimirLCD("Pasaron " + String(contCarton) + " cartones", "El porc: " + String(porcentajeCarton) + "%");
+        break;
+      case 4:
+        imprimirLCD("Pasaron " + String(contPlastico) + " plasticos", "El porc: " + String(porcentajePlastico) + "%");
+        break;
+    }
+  }
+
+
+
 }
