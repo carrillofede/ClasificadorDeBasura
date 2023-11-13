@@ -113,12 +113,10 @@ const int trigPin = 18;
 const int echoPin = 19;
 unsigned long tiempoUltrasonido = 0;
 
-#define SOUND_SPEED 0.034       //define sound speed in cm/uS
-#define CM_TO_INCH 0.393701
+#define VELOCIDAD_SONIDO 0.034       //define velocidad del sonido in cm/uS
 
 long duration = 0;
 float distanceCm = 0;
-float distanceInch = 0;
 
 //Variables del timer 2 para la clasificacion
 volatile int interruptCounter;          //Variable que me indica si interrumpio
@@ -138,7 +136,7 @@ const char* password = "12345678";        //Se crea la contraseña para el modo 
 const int pinWIfi = 32;                     //Pin del LED
 
 //Variables para WiFi
-int deviceCount = 0;           //Dispositivos conectados
+int deviceCount = 0;                //Dispositivos conectados
 int ledOnCount = 0;                 //Número de veces que se enciende el LED
 int ledOffCount = 0;                //Número de veces que se apaga el LED
 bool ledState = LOW;                //Estado actual del LED, estado inicial apagado
@@ -459,30 +457,33 @@ void inicioDeCintaUltrasonido()
     interruptCounter3--;                   //Se resta 1 al interruptCounter para que en un futuro vuelva a interrumpir
     portEXIT_CRITICAL(&timerMux3);         //Vuelven a la normalidad las interrupciones
 
-    // Clears the trigPin
+    // Limpia el pin de activación del sensor ultrasonido
     digitalWrite(trigPin, LOW);
     delayMicroseconds(2);
-    // Sets the trigPin on HIGH state for 10 micro seconds
+
+    // Establece el pin de activación del sensor ultrasonido en estado ALTO durante 10 microsegundos
     digitalWrite(trigPin, HIGH);
     delayMicroseconds(10);
     digitalWrite(trigPin, LOW);
-    
-    // Reads the echoPin, returns the sound wave travel time in microseconds
+
+    // Lee el pin de eco y devuelve el tiempo de viaje de la onda de sonido en microsegundos
     duration = pulseIn(echoPin, HIGH);
     
-    // Calculate the distance
-    distanceCm = duration * SOUND_SPEED/2;
+    // Calcula la distancia en centímetros
+    distanceCm = duration * VELOCIDAD_SONIDO/2;
     
-    // Prints the distance in the Serial Monitor
+    // Verifica si la distancia es válida para activar la cinta
     Serial.print("Distance (cm): ");
     Serial.println(distanceCm);
+
+    // Verifica si ha pasado el tiempo mínimo desde la última activación
     if (distanceCm > 0 && distanceCm < 35)
     {
       if((millis() - tiempoUltrasonido) > 6000)
       {
-        tiempoUltrasonido = millis();
-        Serial.print("Se activo \n");
-        inicio();
+        tiempoUltrasonido = millis();   // Actualiza el tiempo de la última activación
+        Serial.print("Se activo \n");   // Imprime un mensaje de activación en el puerto serie
+        inicio();                       // Inicia la cinta y registra el material en cinta
         materialEnCinta++;
       }
     }
